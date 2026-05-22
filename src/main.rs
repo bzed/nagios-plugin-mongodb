@@ -176,16 +176,7 @@ async fn get_server_status(client: &Client) -> Result<Document, MongoError> {
     client.database("admin").run_command(doc! {"serverStatus": 1}, None).await
 }
 
-async fn get_server_info(client: &Client) -> Result<Document, MongoError> {
-    let db = client.database("admin");
-    match db.run_command(doc! {"hello": 1}, None).await {
-        Ok(r) => Ok(r),
-        Err(_) => match db.run_command(doc! {"ismaster": 1}, None).await {
-            Ok(r) => Ok(r),
-            Err(_) => db.run_command(doc! {"isMaster": 1}, None).await,
-        },
-    }
-}
+
 
 fn check_connect(config: &Config, conn_time: Duration) -> i32 {
     let warn = config.warning.unwrap_or(3.0);
