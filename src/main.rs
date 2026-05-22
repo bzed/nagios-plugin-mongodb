@@ -109,7 +109,7 @@ async fn main() {
 
     // Handle invalid/unimplemented actions before attempting connection
     if config.action == Action::Other {
-        eprintln!("WARNING - Action not yet implemented");
+        println!("WARNING - Action not yet implemented");
         process::exit(WARNING);
     }
 
@@ -131,7 +131,7 @@ async fn main() {
         Action::CollectionState => check_collection_state(&client, &config).await,
         Action::RowCount => check_row_count(&client, &config).await,
         Action::Other => {
-            eprintln!("WARNING - Action not yet implemented");
+            println!("WARNING - Action not yet implemented");
             WARNING
         }
     };
@@ -142,7 +142,7 @@ async fn main() {
 async fn connect_mongodb(config: &Config) -> Result<Client, i32> {
     let conn_string = format!("mongodb://{}:{}", config.host, config.port);
     let mut opts = ClientOptions::parse(&conn_string).map_err(|e| {
-        eprintln!("CRITICAL - Failed to parse connection string: {}", e);
+        println!("CRITICAL - Failed to parse connection string: {}", e);
         CRITICAL
     })?;
     
@@ -157,7 +157,7 @@ async fn connect_mongodb(config: &Config) -> Result<Client, i32> {
     }
 
     let client = Client::with_options(opts).map_err(|e| {
-        eprintln!("CRITICAL - Connection to Mongo server on {}:{} has failed: {}", 
+        println!("CRITICAL - Connection to Mongo server on {}:{} has failed: {}", 
             config.host, config.port, e);
         CRITICAL
     })?;
@@ -165,7 +165,7 @@ async fn connect_mongodb(config: &Config) -> Result<Client, i32> {
     // Test connection with ping
     let db = client.database("admin");
     db.run_command(doc! {"ping": 1}, None).await.map_err(|e| {
-        eprintln!("CRITICAL - MongoDB ping failed: {}", e);
+        println!("CRITICAL - MongoDB ping failed: {}", e);
         CRITICAL
     })?;
 
@@ -200,13 +200,13 @@ fn check_connect(config: &Config, conn_time: Duration) -> i32 {
     };
     
     if secs >= crit {
-        eprintln!("CRITICAL - {}{}", msg, perf);
+        println!("CRITICAL - {}{}", msg, perf);
         CRITICAL
     } else if secs >= warn {
-        eprintln!("WARNING - {}{}", msg, perf);
+        println!("WARNING - {}{}", msg, perf);
         WARNING
     } else {
-        eprintln!("OK - {}{}", msg, perf);
+        println!("OK - {}{}", msg, perf);
         OK
     }
 }
@@ -233,22 +233,22 @@ async fn check_connections(client: &Client, config: &Config) -> i32 {
                 };
                 
                 if pct >= crit {
-                    eprintln!("CRITICAL - {}{}", msg, perf);
+                    println!("CRITICAL - {}{}", msg, perf);
                     CRITICAL
                 } else if pct >= warn {
-                    eprintln!("WARNING - {}{}", msg, perf);
+                    println!("WARNING - {}{}", msg, perf);
                     WARNING
                 } else {
-                    eprintln!("OK - {}{}", msg, perf);
+                    println!("OK - {}{}", msg, perf);
                     OK
                 }
             } else {
-                eprintln!("CRITICAL - Could not get connections data");
+                println!("CRITICAL - Could not get connections data");
                 CRITICAL
             }
         }
         Err(e) => {
-            eprintln!("CRITICAL - General MongoDB Error: {}", e);
+            println!("CRITICAL - General MongoDB Error: {}", e);
             CRITICAL
         }
     }
@@ -285,22 +285,22 @@ async fn check_replset_state(client: &Client, config: &Config) -> i32 {
             let crit = config.critical.unwrap_or(8.0);
             
             if worst_state as f64 >= crit {
-                eprintln!("CRITICAL - {}{}", msg, perf);
+                println!("CRITICAL - {}{}", msg, perf);
                 CRITICAL
             } else if worst_state as f64 >= warn {
-                eprintln!("WARNING - {}{}", msg, perf);
+                println!("WARNING - {}{}", msg, perf);
                 WARNING
             } else {
-                eprintln!("OK - {}{}", msg, perf);
+                println!("OK - {}{}", msg, perf);
                 OK
             }
         }
         Err(e) => {
             if e.to_string().to_lowercase().contains("not running with --replset") {
-                eprintln!("UNKNOWN - Not running with replSet");
+                println!("UNKNOWN - Not running with replSet");
                 UNKNOWN
             } else {
-                eprintln!("CRITICAL - General MongoDB Error: {}", e);
+                println!("CRITICAL - General MongoDB Error: {}", e);
                 CRITICAL
             }
         }
@@ -328,22 +328,22 @@ async fn check_memory(client: &Client, config: &Config) -> i32 {
                 };
                 
                 if resident >= crit {
-                    eprintln!("CRITICAL - {}{}", msg, perf);
+                    println!("CRITICAL - {}{}", msg, perf);
                     CRITICAL
                 } else if resident >= warn {
-                    eprintln!("WARNING - {}{}", msg, perf);
+                    println!("WARNING - {}{}", msg, perf);
                     WARNING
                 } else {
-                    eprintln!("OK - {}{}", msg, perf);
+                    println!("OK - {}{}", msg, perf);
                     OK
                 }
             } else {
-                eprintln!("CRITICAL - Could not get memory data");
+                println!("CRITICAL - Could not get memory data");
                 CRITICAL
             }
         }
         Err(e) => {
-            eprintln!("CRITICAL - General MongoDB Error: {}", e);
+            println!("CRITICAL - General MongoDB Error: {}", e);
             CRITICAL
         }
     }
@@ -365,22 +365,22 @@ async fn check_databases(client: &Client, config: &Config) -> i32 {
                 };
                 
                 if count >= crit {
-                    eprintln!("CRITICAL - {}{}", msg, perf);
+                    println!("CRITICAL - {}{}", msg, perf);
                     CRITICAL
                 } else if count >= warn {
-                    eprintln!("WARNING - {}{}", msg, perf);
+                    println!("WARNING - {}{}", msg, perf);
                     WARNING
                 } else {
-                    eprintln!("OK - {}{}", msg, perf);
+                    println!("OK - {}{}", msg, perf);
                     OK
                 }
             } else {
-                eprintln!("CRITICAL - Could not get databases list");
+                println!("CRITICAL - Could not get databases list");
                 CRITICAL
             }
         }
         Err(e) => {
-            eprintln!("CRITICAL - General MongoDB Error: {}", e);
+            println!("CRITICAL - General MongoDB Error: {}", e);
             CRITICAL
         }
     }
@@ -414,22 +414,22 @@ async fn check_collections(client: &Client, config: &Config) -> i32 {
                 };
                 
                 if count_f64 >= crit {
-                    eprintln!("CRITICAL - {}{}", msg, perf);
+                    println!("CRITICAL - {}{}", msg, perf);
                     CRITICAL
                 } else if count_f64 >= warn {
-                    eprintln!("WARNING - {}{}", msg, perf);
+                    println!("WARNING - {}{}", msg, perf);
                     WARNING
                 } else {
-                    eprintln!("OK - {}{}", msg, perf);
+                    println!("OK - {}{}", msg, perf);
                     OK
                 }
             } else {
-                eprintln!("CRITICAL - Could not get databases list");
+                println!("CRITICAL - Could not get databases list");
                 CRITICAL
             }
         }
         Err(e) => {
-            eprintln!("CRITICAL - General MongoDB Error: {}", e);
+            println!("CRITICAL - General MongoDB Error: {}", e);
             CRITICAL
         }
     }
@@ -446,7 +446,7 @@ async fn check_database_size(client: &Client, database: &str, config: &Config) -
                 Some(Bson::Int32(i)) => *i as f64,
                 Some(Bson::Double(f)) => *f,
                 _ => {
-                    eprintln!("CRITICAL - storageSize has unexpected type");
+                    println!("CRITICAL - storageSize has unexpected type");
                     return CRITICAL;
                 }
             };
@@ -459,18 +459,18 @@ async fn check_database_size(client: &Client, database: &str, config: &Config) -
             };
             
             if size_mb >= crit {
-                eprintln!("CRITICAL - {}{}", msg, perf);
+                println!("CRITICAL - {}{}", msg, perf);
                 CRITICAL
             } else if size_mb >= warn {
-                eprintln!("WARNING - {}{}", msg, perf);
+                println!("WARNING - {}{}", msg, perf);
                 WARNING
             } else {
-                eprintln!("OK - {}{}", msg, perf);
+                println!("OK - {}{}", msg, perf);
                 OK
             }
         }
         Err(e) => {
-            eprintln!("CRITICAL - General MongoDB Error: {}", e);
+            println!("CRITICAL - General MongoDB Error: {}", e);
             CRITICAL
         }
     }
@@ -482,11 +482,11 @@ async fn check_collection_state(client: &Client, config: &Config) -> i32 {
         .find_one(None, None).await
     {
         Ok(_) => {
-            eprintln!("OK - Collection {}.{} is reachable", config.database, config.collection);
+            println!("OK - Collection {}.{} is reachable", config.database, config.collection);
             OK
         }
         Err(e) => {
-            eprintln!("CRITICAL - Collection {}.{} is not reachable: {}", 
+            println!("CRITICAL - Collection {}.{} is not reachable: {}", 
                 config.database, config.collection, e);
             CRITICAL
         }
@@ -511,18 +511,18 @@ async fn check_row_count(client: &Client, config: &Config) -> i32 {
             };
             
             if count_f64 >= crit {
-                eprintln!("CRITICAL - {}{}", msg, perf);
+                println!("CRITICAL - {}{}", msg, perf);
                 CRITICAL
             } else if count_f64 >= warn {
-                eprintln!("WARNING - {}{}", msg, perf);
+                println!("WARNING - {}{}", msg, perf);
                 WARNING
             } else {
-                eprintln!("OK - {}{}", msg, perf);
+                println!("OK - {}{}", msg, perf);
                 OK
             }
         }
         Err(e) => {
-            eprintln!("CRITICAL - General MongoDB Error: {}", e);
+            println!("CRITICAL - General MongoDB Error: {}", e);
             CRITICAL
         }
     }
