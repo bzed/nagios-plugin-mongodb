@@ -1,0 +1,10 @@
+[package]
+name = "check_mongodb"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+mongodb = { version = "2.5", default-features = false, features = ["sync"] }
+bson = "2.5"
+clap = "4.4"
+tokio = { version = "1", features = ["rt", "macros"] }

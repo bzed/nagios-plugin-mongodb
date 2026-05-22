@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #
 # A MongoDB Nagios check script
@@ -168,6 +168,7 @@ def main(argv):
     p.add_option('-m','--auth-mechanism', action='store', type='choice', dest='auth_mechanism', default=None, help='Auth mechanism used for auth with mongodb',
     choices=['MONGODB-X509','SCRAM-SHA-256','SCRAM-SHA-1'])
     p.add_option('--disable_retry_writes', dest='retry_writes_disabled', default=False, action='callback', callback=optional_arg(True), help='Disable retryWrites feature')
+    p.add_option('-t', '--timeout', action='store', type='int', dest='timeout', default=10, help='Timeouts to use in Mongo Client connections, in seconds')
 
     options, arguments = p.parse_args()
     host = options.host
@@ -203,6 +204,7 @@ def main(argv):
     cert_file = options.cert_file
     auth_mechanism = options.auth_mechanism
     retry_writes_disabled = options.retry_writes_disabled
+    timeout = options.timeout
 
     if action == 'replica_primary' and replicaset is None:
         return "replicaset must be passed in when using replica_primary check"
@@ -213,7 +215,7 @@ def main(argv):
     # moving the login up here and passing in the connection
     #
     start = time.time()
-    err, con = mongo_connect(host, port, ssl, user, passwd, replicaset, authdb, insecure, ssl_ca_cert_file, cert_file, auth_mechanism, retry_writes_disabled=retry_writes_disabled)
+    err, con = mongo_connect(host, port, ssl, user, passwd, replicaset, authdb, insecure, ssl_ca_cert_file, cert_file, auth_mechanism, retry_writes_disabled=retry_writes_disabled, timeout=timeout)
     if err != 0:
         return err
 
@@ -288,7 +290,7 @@ def main(argv):
     elif action == "chunks_balance":
         chunks_balance(con, database, collection, warning, critical)
     elif action == "connect_primary":
-        return check_connect_primary(con, warning, critical, perf_data)
+        return check_connect_primary(con, warning, critical, perf_data, ssl, user, passwd, replicaset, authdb, insecure, ssl_ca_cert_file, cert_file, auth_mechanism, retry_writes_disabled=retry_writes_disabled)
     elif action == "collection_state":
         return check_collection_state(con, database, collection)
     elif action == "row_count":
@@ -299,10 +301,18 @@ def main(argv):
         return check_connect(host, port, warning, critical, perf_data, user, passwd, conn_time)
 
 
-def mongo_connect(host=None, port=None, ssl=False, user=None, passwd=None, replica=None, authdb="admin", insecure=False, ssl_ca_cert_file=None, ssl_cert=None, auth_mechanism=None, retry_writes_disabled=False):
+def mongo_connect(host=None, port=None, ssl=False, user=None, passwd=None, replica=None, authdb="admin", insecure=False, ssl_ca_cert_file=None, ssl_cert=None, auth_mechanism=None, retry_writes_disabled=False, timeout=10):
     from pymongo.errors import ConnectionFailure
     from pymongo.errors import PyMongoError
     import ssl as SSL
+
+    # Helper function for proper version comparison
+    def pymongo_version_tuple(version_str):
+        """Convert pymongo version string to tuple for comparison."""
+        try:
+            return tuple(int(x) for x in version_str.split('.')[:2])
+        except (ValueError, AttributeError):
+            return (0, 0)
 
     con_args = dict()
 
@@ -323,40 +333,75 @@ def mongo_connect(host=None, port=None, ssl=False, user=None, passwd=None, repli
     try:
         # ssl connection for pymongo > 2.3
         if pymongo.version >= "2.3":
+            # Pass username/password for regular auth and SCRAM auth
+            # For MONGODB-X509 with SSL certs, credentials come from the certificate
+            if not (ssl_cert and ssl_ca_cert_file and auth_mechanism == 'MONGODB-X509'):
+                con_args['username'] = user
+                con_args['password'] = passwd
+            
+            # Pass authMechanism if specified
+            if auth_mechanism:
+                con_args['authMechanism'] = auth_mechanism
+            
+            # timeoutMS was introduced in pymongo 4.2
+            # For pymongo 3.0-4.1, use socketTimeoutMS and connectTimeoutMS
+            # For pymongo 2.x, use network_timeout (in seconds)
+            # Use tuple comparison for proper version ordering (4.10 > 4.2 lexicographically but 4.2 > 4.10 numerically)
+            pymongo_ver = pymongo_version_tuple(pymongo.version)
+            if pymongo_ver >= (4, 2):
+                con_args['timeoutMS'] = timeout * 1000
+            elif pymongo_ver >= (3, 0):
+                # In pymongo 3.x, use socketTimeoutMS and connectTimeoutMS (milliseconds)
+                con_args['socketTimeoutMS'] = timeout * 1000
+                con_args['connectTimeoutMS'] = timeout * 1000
+            else:
+                # pymongo 2.x
+                con_args['network_timeout'] = timeout
+            
             if replica is None:
                 con = pymongo.MongoClient(host, port, **con_args)
             else:
                 con = pymongo.MongoClient(host, port, read_preference=pymongo.ReadPreference.SECONDARY, replicaSet=replica, **con_args)
         else:
+            # For pymongo < 2.3, we need to pass credentials to Connection
             if replica is None:
-                con = pymongo.Connection(host, port, slave_okay=True, network_timeout=10)
+                con = pymongo.Connection(host, port, username=user, password=passwd, slave_okay=True, network_timeout=timeout)
             else:
-                con = pymongo.Connection(host, port, slave_okay=True, network_timeout=10)
-
-        # we must authenticate the connection, otherwise we won't be able to perform certain operations
-        if ssl_cert and ssl_ca_cert_file and user and auth_mechanism == 'SCRAM-SHA-256':
-            con.the_database.authenticate(user, mechanism='SCRAM-SHA-256')
-        elif ssl_cert and ssl_ca_cert_file and user and auth_mechanism == 'SCRAM-SHA-1':
-            con.the_database.authenticate(user, mechanism='SCRAM-SHA-1')
-        elif ssl_cert and ssl_ca_cert_file and user and auth_mechanism == 'MONGODB-X509':
-            con.the_database.authenticate(user, mechanism='MONGODB-X509')
+                con = pymongo.Connection(host, port, username=user, password=passwd, slave_okay=True, network_timeout=timeout)
+            
+            # For older pymongo, use authenticate() for SSL cert auth if needed
+            # This will fail in pymongo 4.x but we're in the < 2.3 branch so it's safe
+            if ssl_cert and ssl_ca_cert_file and user and auth_mechanism:
+                try:
+                    if auth_mechanism == 'SCRAM-SHA-256':
+                        con.the_database.authenticate(user, mechanism='SCRAM-SHA-256')
+                    elif auth_mechanism == 'SCRAM-SHA-1':
+                        con.the_database.authenticate(user, mechanism='SCRAM-SHA-1')
+                    elif auth_mechanism == 'MONGODB-X509':
+                        con.the_database.authenticate(user, mechanism='MONGODB-X509')
+                except (AttributeError, Exception):
+                    # authenticate() method doesn't exist in this pymongo version or failed
+                    pass
 
         try:
-          result = con.admin.command("ismaster")
+          # Try hello command first (replaces ismaster in MongoDB 4.4+), fall back to ismaster
+          try:
+              result = con.admin.command("hello")
+          except:
+              result = con.admin.command("ismaster")
         except ConnectionFailure:
           print("CRITICAL - Connection to Mongo server on %s:%s has failed" % (host, port) )
           sys.exit(2)
 
-        if 'arbiterOnly' in result and result['arbiterOnly'] == True:
-            print("OK - State: 7 (Arbiter on port %s)" % (port))
+        # Check if this is an arbiter - arbiterOnly field in hello response, or ismaster response
+        # For MongoDB 7.0+, also check if host is in arbiters list
+        if result.get('arbiterOnly') == True:
+            print("OK - State: 7 (Arbiter on port %s)" % (port) + " |state=7")
             sys.exit(0)
-
-        if user and passwd:
-            db = con[authdb]
-            try:
-              db.authenticate(user, password=passwd)
-            except PyMongoError:
-                sys.exit("Username/Password incorrect")
+        # Additional check for MongoDB 7.0: if we're in the arbiters list but arbiterOnly is not set
+        if 'arbiters' in result and host in [a.split(':')[0] for a in result.get('arbiters', [])]:
+            print("OK - State: 7 (Arbiter on port %s)" % (port) + " |state=7")
+            sys.exit(0)
 
         # Ping to check that the server is responding.
         con.admin.command("ping")
@@ -392,6 +437,17 @@ def set_read_preference(db):
         pymongo.read_preferences.Secondary
     else:
         db.read_preference = pymongo.ReadPreference.SECONDARY
+
+
+def get_server_info(con):
+    """Get server info using hello command (MongoDB 4.4+) or ismaster for older versions."""
+    try:
+        return con.admin.command("hello")
+    except:
+        try:
+            return con.admin.command("ismaster")
+        except:
+            return con.admin.command("isMaster", 1)
 
 def check_version(con):
     try:
@@ -432,11 +488,12 @@ def check_connections(con, warning, critical, perf_data):
 def check_rep_lag(con, host, port, rdns_lookup, warning, critical, percent, perf_data, max_lag, ssl=False, user=None, passwd=None, replicaset=None, authdb="admin", insecure=None, ssl_ca_cert_file=None, cert_file=None, auth_mechanism=None, retry_writes_disabled=False):
     # Get mongo to tell us replica set member name when connecting locally
     if "127.0.0.1" == host:
-        if not "me" in list(con.admin.command("ismaster","1").keys()):
+        server_info = get_server_info(con)
+        if not "me" in list(server_info.keys()):
             print("UNKNOWN - This is not replicated MongoDB")
             return 3
 
-        host = con.admin.command("ismaster","1")["me"].split(':')[0]
+        host = server_info["me"].split(':')[0]
 
     if percent:
         warning = warning or 50
@@ -931,7 +988,7 @@ def check_collections(con, warning, critical, perf_data=None):
         for db in data['databases']:
             dbase = con[db['name']]
             set_read_preference(dbase)
-            if pymongo.version >= "3.7":
+            if pymongo_version_tuple(pymongo.version) >= (3, 7):
                 count += len(dbase.list_collection_names())
             else:
                 count += len(dbase.collection_names())
@@ -1414,7 +1471,7 @@ def check_asserts(con, host, port, warning, critical, perf_data):
 def get_stored_primary_server_name(db):
     """ get the stored primary server name from db. """
     # Choose the correct collection listing method based on PyMongo version
-    if pymongo.version >= "3.7":
+    if pymongo_version_tuple(pymongo.version) >= (3, 7):
         collection_list_method = db.list_collection_names
     else:
         collection_list_method = db.collection_names
@@ -1531,26 +1588,24 @@ def chunks_balance(con, database, collection, warning, critical):
     sys.exit(0)
 
 
-def check_connect_primary(con, warning, critical, perf_data):
+def check_connect_primary(con, warning, critical, perf_data, ssl=False, user=None, passwd=None, replicaset=None, authdb="admin", insecure=False, ssl_ca_cert_file=None, cert_file=None, auth_mechanism=None, retry_writes_disabled=False):
     warning = warning or 3
     critical = critical or 6
 
     try:
-        try:
-            set_read_preference(con.admin)
-            data = con.admin.command(pymongo.son_manipulator.SON([('isMaster', 1)]))
-        except:
-            data = con.admin.command(son.SON([('isMaster', 1)]))
+        data = get_server_info(con)
 
-        if data['ismaster'] == True:
+        # Check if this is primary - ismaster field (old) or isWritablePrimary (new in hello)
+        if data.get('ismaster') == True or data.get('isWritablePrimary') == True:
             print("OK - This server is primary")
             return 0
 
-        phost = data['primary'].split(':')[0]
-        pport = int(data['primary'].split(':')[1])
+        # Get primary host from response
+        phost = data.get('primary', '').split(':')[0]
+        pport = int(data.get('primary', '').split(':')[1])
         start = time.time()
 
-        err, con = mongo_connect(phost, pport)
+        err, con = mongo_connect(phost, pport, ssl, user, passwd, replicaset, authdb, insecure, ssl_ca_cert_file, cert_file, auth_mechanism, retry_writes_disabled)
         if err != 0:
             return err
 
