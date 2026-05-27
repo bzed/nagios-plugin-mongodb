@@ -245,8 +245,16 @@ async fn check_connections(client: &Client, config: &Config) -> i32 {
     match get_server_status(client).await {
         Ok(status) => {
             if let Some(conns) = status.get("connections").and_then(|c| c.as_document()) {
-                let current = conns.get("current").and_then(|c| c.as_i64()).unwrap_or(0) as f64;
-                let available = conns.get("available").and_then(|a| a.as_i64()).unwrap_or(0) as f64;
+                let current = conns.get("current").and_then(|c| match c {
+                    Bson::Int32(i) => Some(*i as i64),
+                    Bson::Int64(i) => Some(*i),
+                    _ => None,
+                }).unwrap_or(0) as f64;
+                let available = conns.get("available").and_then(|a| match a {
+                    Bson::Int32(i) => Some(*i as i64),
+                    Bson::Int64(i) => Some(*i),
+                    _ => None,
+                }).unwrap_or(0) as f64;
                 let total = current + available;
                 let pct = if total > 0.0 { (current / total) * 100.0 } else { 0.0 };
                 
@@ -341,13 +349,34 @@ async fn check_memory(client: &Client, config: &Config) -> i32 {
     match get_server_status(client).await {
         Ok(status) => {
             if let Some(mem) = status.get("mem").and_then(|m| m.as_document()) {
-                let resident = mem.get("resident").and_then(|v| match v {
-                    Bson::Double(f) => Some(*f / 1024.0 / 1024.0), // Convert to GB
-                    Bson::Int64(i) => Some(*i as f64 / 1024.0 / 1024.0),
-                    _ => None,
-                }).unwrap_or(0.0);
+                let get_mem_value = |field: &str| -> f64 {
+                    mem.get(field).and_then(|v| match v {
+                        Bson::Double(f) => Some(*f),
+                        Bson::Int64(i) => Some(*i as f64),
+                        Bson::Int32(i) => Some(*i as f64),
+                        _ => None,
+                    }).unwrap_or(0.0)
+                };
                 
-                let msg = format!("Memory Usage: {:.2}GB resident", resident);
+                let resident = get_mem_value("resident") / 1024.0;
+                let r#virtual = get_mem_value("virtual") / 1024.0;
+                let mapped = get_mem_value("mapped");
+                let mapped_with_journal = get_mem_value("mappedWithJournal");
+                
+                let mut msg = "Memory Usage:".to_string();
+                msg.push_str(&format!(" {:.2}GB resident,", resident));
+                msg.push_str(&format!(" {:.2}GB virtual,", r#virtual));
+                
+                if mapped > 0.0 {
+                    msg.push_str(&format!(" {:.2}GB mapped,", mapped / 1024.0));
+                } else {
+                    msg.push_str(" mapped unsupported,");
+                }
+                
+                if mapped_with_journal > 0.0 {
+                    msg.push_str(&format!(" {:.2}GB mappedWithJournal", mapped_with_journal / 1024.0));
+                }
+                
                 let perf = if config.perf_data {
                     format!(" |memory_usage={:.2};{};{}", resident, warn, crit)
                 } else {
@@ -610,23 +639,31 @@ async fn check_memory_mapped(client: &Client, config: &Config) -> i32 {
     match get_server_status(client).await {
         Ok(status) => {
             if let Some(mem) = status.get("mem").and_then(|m| m.as_document()) {
-                let mapped = mem.get("mapped").and_then(|v| match v {
-                    Bson::Double(f) => Some(*f / 1024.0 / 1024.0),
-                    Bson::Int64(i) => Some(*i as f64 / 1024.0 / 1024.0),
-                    _ => None,
-                }).unwrap_or(0.0);
+                let mapped = mem.get("mapped");
+                
+                if mapped.is_none() {
+                    println!("OK - Server does not provide mem.mapped info");
+                    return OK;
+                }
+                
+                let mapped_gb = match mapped.unwrap() {
+                    Bson::Double(f) => *f / 1024.0 / 1024.0,
+                    Bson::Int64(i) => *i as f64 / 1024.0 / 1024.0,
+                    Bson::Int32(i) => *i as f64 / 1024.0 / 1024.0,
+                    _ => 0.0,
+                };
 
-                let msg = format!("Memory Usage: {:.2}GB mapped", mapped);
+                let msg = format!("Memory Usage: {:.2}GB mapped", mapped_gb);
                 let perf = if config.perf_data {
-                    format!(" |memory_mapped={:.2};{};{}", mapped, warn, crit)
+                    format!(" |memory_mapped={:.2};{};{}", mapped_gb, warn, crit)
                 } else {
                     String::new()
                 };
 
-                if mapped >= crit {
+                if mapped_gb >= crit {
                     println!("CRITICAL - {}{}", msg, perf);
                     CRITICAL
-                } else if mapped >= warn {
+                } else if mapped_gb >= warn {
                     println!("WARNING - {}{}", msg, perf);
                     WARNING
                 } else {
@@ -654,23 +691,30 @@ async fn check_lock(client: &Client, config: &Config) -> i32 {
             if let Some(global_lock) = status.get("globalLock").and_then(|g| g.as_document()) {
                 let lock_time = global_lock.get("lockTime").and_then(|l| l.as_i64()).unwrap_or(0) as f64;
                 let total_time = global_lock.get("totalTime").and_then(|t| t.as_i64()).unwrap_or(1) as f64;
-                let pct = if total_time > 0.0 { (lock_time / total_time) * 100.0 } else { 0.0 };
+                
+                // In MongoDB 7.0+, lockTime field may not exist - only totalTime, currentQueue, activeClients
+                if lock_time > 0.0 && total_time > 0.0 {
+                    let pct = (lock_time / total_time) * 100.0;
+                    let msg = format!("Lock Percentage: {:.2}%", pct);
+                    let perf = if config.perf_data {
+                        format!(" |lock_percentage={:.2};{};{}", pct, warn, crit)
+                    } else {
+                        String::new()
+                    };
 
-                let msg = format!("Lock Percentage: {:.2}%", pct);
-                let perf = if config.perf_data {
-                    format!(" |lock_percentage={:.2};{};{}", pct, warn, crit)
+                    if pct >= crit {
+                        println!("CRITICAL - {}{}", msg, perf);
+                        CRITICAL
+                    } else if pct >= warn {
+                        println!("WARNING - {}{}", msg, perf);
+                        WARNING
+                    } else {
+                        println!("OK - {}{}", msg, perf);
+                        OK
+                    }
                 } else {
-                    String::new()
-                };
-
-                if pct >= crit {
-                    println!("CRITICAL - {}{}", msg, perf);
-                    CRITICAL
-                } else if pct >= warn {
-                    println!("WARNING - {}{}", msg, perf);
-                    WARNING
-                } else {
-                    println!("OK - {}{}", msg, perf);
+                    // lockTime is 0 or missing - no lock data available in this MongoDB version
+                    println!("OK - No lock data available for this MongoDB version");
                     OK
                 }
             } else {
@@ -734,27 +778,37 @@ async fn check_index_miss_ratio(client: &Client, config: &Config) -> i32 {
 
     match get_server_status(client).await {
         Ok(status) => {
-            let miss_ratio = if let Some(index_counters) = status.get("indexCounters").and_then(|i| i.as_document()) {
-                index_counters.get("missRatio").and_then(|m| m.as_f64()).unwrap_or(0.0)
-            } else {
-                0.0
-            };
+            let ic_field = status.get("indexCounters");
+            
+            // Check if indexCounters has a note about not being supported
+            if let Some(Bson::Document(ic_doc)) = ic_field {
+                if let Some(Bson::String(note)) = ic_doc.get("note") {
+                    if note.contains("not supported on this platform") {
+                        println!("OK - MongoDB says: not supported on this platform");
+                        return OK;
+                    }
+                }
+                // If we have indexCounters but no note, try to get missRatio
+                let miss_ratio = ic_doc.get("missRatio").and_then(|m| m.as_f64()).unwrap_or(0.0);
+                let msg = format!("Miss Ratio: {:.2}%", miss_ratio);
+                let perf = if config.perf_data {
+                    format!(" |index_miss_ratio={:.2};{};{}", miss_ratio, warn, crit)
+                } else {
+                    String::new()
+                };
 
-            let msg = format!("Miss Ratio: {:.2}%", miss_ratio);
-            let perf = if config.perf_data {
-                format!(" |index_miss_ratio={:.2};{};{}", miss_ratio, warn, crit)
+                if miss_ratio >= crit {
+                    println!("CRITICAL - {}{}", msg, perf);
+                    CRITICAL
+                } else if miss_ratio >= warn {
+                    println!("WARNING - {}{}", msg, perf);
+                    WARNING
+                } else {
+                    println!("OK - {}{}", msg, perf);
+                    OK
+                }
             } else {
-                String::new()
-            };
-
-            if miss_ratio >= crit {
-                println!("CRITICAL - {}{}", msg, perf);
-                CRITICAL
-            } else if miss_ratio >= warn {
-                println!("WARNING - {}{}", msg, perf);
-                WARNING
-            } else {
-                println!("OK - {}{}", msg, perf);
+                println!("OK - MongoDB says: not supported on this platform");
                 OK
             }
         }
