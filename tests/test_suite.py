@@ -290,23 +290,25 @@ def create_test_cases():
     # Various Action Tests
     # ============================================
 
-    actions = ["connect", "connections", "databases", "collections", "memory"]
+    # Test simple actions that should work without a live MongoDB (will fail to connect but test parsing)
+    actions = ["connect", "connections", "replset_state", "replset_quorum", "memory",
+              "memory_mapped", "lock", "flushing", "database_size", "database_indexes"]
 
     for action in actions:
         tests.append(TestResult(
             name=f"Python: action={action}",
             implementation=PYTHON_PLUGIN,
-            args=["-H", "127.0.0.1", "-P", str(NON_EXISTENT_PORT), "-A", action, "-t", "2"],
+            args=["-H", "127.0.0.1", "-P", str(NON_EXISTENT_PORT), "-A", action, "-t", "1"],
             expected_exit_code=2,
-            timeout=5
+            timeout=3
         ))
 
         tests.append(TestResult(
             name=f"Rust: action={action}",
             implementation=RUST_BINARY,
-            args=["-H", "127.0.0.1", "-P", str(NON_EXISTENT_PORT), "-A", action, "-t", "2"],
+            args=["-H", "127.0.0.1", "-P", str(NON_EXISTENT_PORT), "-A", action, "-t", "1"],
             expected_exit_code=2,
-            timeout=5
+            timeout=3
         ))
 
     return tests
